@@ -22,20 +22,20 @@ DISPLAY_SUPPLIES = 5
 class Events:
     """Async iterator class for x11 events"""
 
-    def __init__(self, loop, display: Xdisplay.Display):
+    def __init__(self, loop, display):
         self._loop = loop
         self._display = display
 
     @staticmethod
-    async def receive_event(loop, display):
+    async def wait_for_event(loop, display):
         """Waits asynchronously for an x11 event and returns it"""
-        return await loop.run_in_executor(None, display.next_event)
+        return await loop.run_in_executor(None, display.wait_for_event)
 
     def __aiter__(self):
         return self
 
     async def __anext__(self):
-        return await Events.receive_event(self._loop, self._display)
+        return await Events.wait_for_event(self._loop, self._display)
 
 
 class TerminalWindowInfo(terminal.TerminalInfo):

@@ -4,16 +4,10 @@ import abc
 import weakref
 import attr
 
-import Xlib.X as X
-import Xlib.display as Xdisplay
-import Xlib.ext.shape as Xshape
-import Xlib.protocol.event as Xevent
-import PIL.Image as Image
-
 import ueberzug.xutil as xutil
 import ueberzug.geometry as geometry
 import ueberzug.scaling as scaling
-import Xshm
+import ueberzug.X as X
 
 
 def roundup(value, unit):
@@ -51,9 +45,8 @@ class WindowFactory:
         raise NotImplementedError()
 
 
-class OverlayWindow:
+class OverlayWindow(X.Window):
     """Ensures unmapping of windows"""
-    SCREEN_DEPTH = 24
 
     class Factory(WindowFactory):
         """OverlayWindows factory class"""
@@ -70,14 +63,15 @@ class OverlayWindow:
         class TransformedImage:
             """Data class which contains the options
             an image was transformed with
-            and the image data."""
+            and the image data.
+            """
             options = attr.ib(type=tuple)
             data = attr.ib(type=bytes)
 
         def __init__(self, x: int, y: int, width: int, height: int,
                      scaling_position: geometry.Point,
                      scaler: scaling.ImageScaler,
-                     path: str, image: Image, last_modified: int,
+                     path: str, image, last_modified: int,
                      cache: weakref.WeakKeyDictionary = None):
             # x, y are useful names in this case
             # pylint: disable=invalid-name
@@ -144,46 +138,43 @@ class OverlayWindow:
             return (x, y, *self.transform_image(
                 term_info, width, height, format_scanline))
 
-    def __init__(self, display: Xdisplay.Display,
-                 view: View, term_info: xutil.TerminalWindowInfo):
+    def __init__(self, display: X.Display,
+                 view: View, parent_info: xutil.TerminalWindowInfo):
         """Changes the foreground color of the gc object.
 
         Args:
             display (Xlib.display.Display): any created instance
             parent_id (int): the X11 window id of the parent window
         """
-        self._display = display
-        self._screen = display.screen()
-        self._colormap = None
-        self.parent_info = term_info
-        self.parent_window = None
-        self.window = None
+        super().__init__(display, parent_info.window_id)
+        self.parent_info = parent_info
         self._view = view
-        self._width = 1
-        self._height = 1
-        self._image = Xshm.Image(
-            self._screen.width_in_pixels,
-            self._screen.height_in_pixels)
-        self.create()
+        # TODO change this to the real values
+        self.SCREEN_WIDTH = 2000
+        self.SCREEN_HEIGHT = 2000
+        self._image = X.Image(
+            display,
+            self.SCREEN_WIDTH,
+            self.SCREEN_HEIGHT)
 
     def __enter__(self):
-        self.map()
+        # TODO is this still needed?
         self.draw()
         return self
 
     def __exit__(self, *args):
-        self.destroy()
+        pass
 
     def draw(self):
         """Draws the window and updates the visibility mask."""
         rectangles = []
 
-        scanline_pad = self.window.display.info.bitmap_format_scanline_pad
-        scanline_unit = self.window.display.info.bitmap_format_scanline_unit
+        scanline_pad = 32  # TODO add to c module # self.window.display.info.bitmap_format_scanline_pad
+        scanline_unit = 32  # TODO add to c module # self.window.display.info.bitmap_format_scanline_unit
 
         if not self.parent_info.ready:
             self.parent_info.calculate_sizes(
-                self._width, self._height)
+                self.width, self.height)
 
         for placement in self._view.media.values():
             # x, y are useful names in this case
@@ -195,103 +186,13 @@ class OverlayWindow:
             self._image.draw(x, y, width, height, image)
 
         self._image.copy_to(
-            self.window.id,
+            self.id,
             0, 0,
-            min(self._width, self._screen.width_in_pixels),
-            min(self._height, self._screen.height_in_pixels))
-        self.window.shape_rectangles(
-            Xshape.SO.Set, Xshape.SK.Bounding, 0,
-            0, 0, rectangles)
-
-        self._display.flush()
-
-    def create(self):
-        """Creates the window and gc"""
-        if self.window:
-            return
-
-        visual_id = get_visual_id(self._screen, OverlayWindow.SCREEN_DEPTH)
-        self._colormap = self._screen.root.create_colormap(
-            visual_id, X.AllocNone)
-        self.parent_window = self._display.create_resource_object(
-            'window', self.parent_info.window_id)
-        parent_size = None
-        with xutil.get_display() as display:
-            parent_window = display.create_resource_object(
-                'window', self.parent_info.window_id)
-            parent_size = parent_window.get_geometry()
-        self._width, self._height = parent_size.width, parent_size.height
-
-        self.window = self.parent_window.create_window(
-            0, 0, parent_size.width, parent_size.height, 0,
-            OverlayWindow.SCREEN_DEPTH,
-            X.InputOutput,
-            visual_id,
-            background_pixmap=0,
-            colormap=self._colormap,
-            background_pixel=0,
-            border_pixel=0,
-            event_mask=X.ExposureMask)
-        self.parent_window.change_attributes(
-            event_mask=X.StructureNotifyMask)
-        self._set_click_through()
-        self._set_invisible()
-        self._display.flush()
+            min(self.width, self.SCREEN_WIDTH),
+            min(self.height, self.SCREEN_HEIGHT))
+        self.set_visibility_mask(rectangles)
+        super().draw()
 
     def reset_terminal_info(self):
         """Resets the terminal information of this window."""
         self.parent_info.reset()
-
-    def process_event(self, event):
-        if (isinstance(event, Xevent.Expose) and
-                event.window.id == self.window.id and
-                event.count == 0):
-            self.draw()
-        elif (isinstance(event, Xevent.ConfigureNotify) and
-              event.window.id == self.parent_window.id):
-            delta_width = event.width - self._width
-            delta_height = event.height - self._height
-
-            if delta_width != 0 or delta_height != 0:
-                self._width, self._height = event.width, event.height
-                self.window.configure(
-                    width=event.width,
-                    height=event.height)
-                self._display.flush()
-
-            if delta_width > 0 or delta_height > 0:
-                self.draw()
-
-    def map(self):
-        self.window.map()
-        self._display.flush()
-
-    def unmap(self):
-        self.window.unmap()
-        self._display.flush()
-
-    def destroy(self):
-        """Destroys the window and it's resources"""
-        if self.window:
-            self.window.unmap()
-            self.window.destroy()
-            self.window = None
-        if self._colormap:
-            self._colormap.free()
-            self._colormap = None
-        self._display.flush()
-
-    def _set_click_through(self):
-        """Sets the input processing area to an area
-        of 1x1 pixel by using the XShape extension.
-        So nearly the full window is click-through.
-        """
-        self.window.shape_rectangles(
-            Xshape.SO.Set, Xshape.SK.Input, 0,
-            0, 0, [])
-
-    def _set_invisible(self):
-        """Makes the window invisible."""
-        self.window.shape_rectangles(
-            Xshape.SO.Set, Xshape.SK.Bounding, 0,
-            0, 0, [])

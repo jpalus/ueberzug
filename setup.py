@@ -32,7 +32,9 @@ setuptools.setup(
     },
     ext_modules=[
         distutils.core.Extension(
-            "Xshm", ["Xshm/Xshm.c"], libraries=["X11", "Xext"]),
+            "ueberzug.X",
+            ["ueberzug/X/X.c", "ueberzug/X/Xshm.c", "ueberzug/X/window.c", "ueberzug/X/display.c"],
+            libraries=["X11", "Xext"]),
     ],
 
     # Versions should comply with PEP 440:

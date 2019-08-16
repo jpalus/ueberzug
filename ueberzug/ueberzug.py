@@ -40,12 +40,14 @@ import ueberzug.batch as batch
 import ueberzug.action as action
 import ueberzug.result as result
 import ueberzug.tmux_util as tmux_util
+import ueberzug.X as X
 
 
 async def main_xevents(loop, display, windows):
     """Coroutine which processes X11 events"""
-    async for event in xutil.Events(loop, display):
-        windows.process_event(event)
+    async for _ in xutil.Events(loop, display):
+        if not any(windows.process_event()):
+            display.discard_event()
 
 
 async def main_commands(loop, shutdown_routine_factory,
@@ -79,7 +81,7 @@ async def query_windows(window_factory, windows, view):
     map_parent_window_id_info = {info.window_id: info
                                  for info in parent_window_infos}
     parent_window_ids = map_parent_window_id_info.keys()
-    map_current_windows = {window.parent_window.id: window
+    map_current_windows = {window.parent_id: window
                            for window in windows}
     current_window_ids = map_current_windows.keys()
     diff_window_ids = parent_window_ids ^ current_window_ids
@@ -135,7 +137,8 @@ def setup_tmux_hooks():
     events = (
         'client-session-changed',
         'session-window-changed',
-        'pane-mode-changed'
+        'pane-mode-changed',
+        'client-detached'
     )
     lock_directory_path = pathlib.PosixPath(tempfile.gettempdir()) / 'ueberzug'
     lock_file_path = lock_directory_path / tmux_util.get_session_id()
@@ -178,7 +181,7 @@ def setup_tmux_hooks():
 
 
 def main_layer(options):
-    display = xutil.get_display()
+    display = X.Display()
     window_infos = xutil.get_parent_window_infos()
     loop = asyncio.get_event_loop()
     executor = thread.DaemonThreadPoolExecutor(max_workers=2)
