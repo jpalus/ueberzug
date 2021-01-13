@@ -1,6 +1,8 @@
 """This module contains x11 utils"""
+from collections import defaultdict
 import functools
 import asyncio
+import os
 
 import Xlib
 import Xlib.display as Xdisplay
@@ -84,6 +86,16 @@ def get_pid_by_window_id(display: Xdisplay.Display, window_id: int):
             else None)
 
 
+def get_visible_window_ids(display: Xdisplay.Display = None):
+    d = display or get_display()
+    try:
+        return d.screen().root.get_full_property(
+                    d.intern_atom('_NET_CLIENT_LIST'),
+                    Xlib.X.AnyPropertyType).value
+    finally:
+        if not display:
+            d.close()
+
 def get_pid_window_id_map():
     """Determines the pid of each mapped window.
 
@@ -92,18 +104,13 @@ def get_pid_window_id_map():
     """
     with get_display() as display:
         root = display.screen().root
-        visible_window_ids = \
-            (root.get_full_property(
-                display.intern_atom('_NET_CLIENT_LIST'),
-                Xlib.X.AnyPropertyType)
-             .value)
-        return {**{
-            get_pid_by_window_id(display, window.id): window.id
-            for window in root.query_tree().children
-        }, **{
-            get_pid_by_window_id(display, window_id): window_id
-            for window_id in visible_window_ids
-        }}
+        visible_window_ids = get_visible_window_ids(display)
+        pid_to_win_id = defaultdict(set)
+        { pid_to_win_id[get_pid_by_window_id(display, window.id)].add(window.id)
+            for window in root.query_tree().children }
+        { pid_to_win_id[get_pid_by_window_id(display, window_id)].add(window_id)
+            for window_id in visible_window_ids }
+        return pid_to_win_id
 
 
 def sort_by_key_list(mapping: dict, key_list: list):
@@ -174,9 +181,19 @@ def get_parent_window_infos():
             ppids = get_parent_pids(pid)
             ppid_window_id_map = key_intersection(pid_window_id_map, ppids)
             try:
-                window_pid, window_id = next(iter(sort_by_key_list(
+                pid, window_ids = next(iter(sort_by_key_list(
                     ppid_window_id_map, ppids)))
-                window_children_pids = ppids[:ppids.index(window_pid)][::-1]
+                if len(window_ids) == 1:
+                    window_id = next(iter(window_ids))
+                else:
+                    env_window_id = os.getenv('WINDOWID')
+
+                    if env_window_id and env_window_id.isnumeric() and int(env_window_id) in get_visible_window_ids():
+                        window_id = int(env_window_id)
+                    else:
+                        window_id = next(iter(window_ids))
+
+                window_children_pids = ppids[:ppids.index(pid)][::-1]
                 pty = get_first_pty(window_children_pids)
                 window_infos.append(TerminalWindowInfo(window_id, pty))
             except StopIteration:
